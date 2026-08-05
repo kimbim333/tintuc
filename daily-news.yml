@@ -1,0 +1,29 @@
+name: Gửi bản tin sáng
+
+on:
+  schedule:
+    # 23:00 UTC = 06:00 giờ Việt Nam (UTC+7)
+    - cron: "0 23 * * *"
+  workflow_dispatch: {}   # cho phép bấm chạy thử thủ công trên GitHub
+
+jobs:
+  send-news:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Cài Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cài thư viện
+        run: pip install -r requirements.txt
+
+      - name: Gửi bản tin
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: python send_news.py

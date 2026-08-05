@@ -1,5 +1,5 @@
 """
-Bot tổng hợp tin tức hàng ngày -> AI tóm tắt (Gemini, miễn phí) -> gửi qua Telegram
+Bot tổng hợp tin tức hàng ngày -> AI tóm tắt (Groq, miễn phí) -> gửi qua Telegram
 Nguồn: RSS chính thức của các báo uy tín
 """
 
@@ -13,13 +13,10 @@ from datetime import datetime, timedelta, timezone
 
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
-GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
+GROQ_API_KEY = os.environ["GROQ_API_KEY"]
 
-GEMINI_MODEL = "gemini-flash-latest"
-GEMINI_URL = (
-    f"https://generativelanguage.googleapis.com/v1beta/models/"
-    f"{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
-)
+GROQ_MODEL = "openai/gpt-oss-120b"
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 # Các nguồn RSS uy tín, mục "tin mới nhất" = tất cả chủ đề
 FEEDS = {
@@ -37,6 +34,14 @@ HOURS_LOOKBACK = 20  # lấy tin trong khoảng 20h gần nhất (chạy hàng n
 
 VN_TZ = timezone(timedelta(hours=7))
 
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/rss+xml, application/xml, text/xml, */*",
+}
+
 
 def clean_html(raw_html: str) -> str:
     """Loại bỏ thẻ HTML còn sót lại trong mô tả RSS."""
@@ -52,15 +57,6 @@ def parse_entry_time(entry):
         if getattr(entry, key, None):
             return datetime(*getattr(entry, key)[:6], tzinfo=timezone.utc)
     return None
-
-
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Accept": "application/rss+xml, application/xml, text/xml, */*",
-}
 
 
 def fetch_source(name: str, url: str):
@@ -105,7 +101,7 @@ def collect_all_items():
 
 
 def build_raw_digest_text(all_by_source: dict) -> str:
-    """Chuyển toàn bộ tin thô thành 1 khối văn bản để đưa cho Gemini xử lý."""
+    """Chuyển toàn bộ tin thô thành 1 khối văn bản để đưa cho AI xử lý."""
     lines = []
     for source, items in all_by_source.items():
         lines.append(f"\n## Nguồn: {source}")
@@ -117,8 +113,8 @@ def build_raw_digest_text(all_by_source: dict) -> str:
     return "\n".join(lines)
 
 
-def summarize_with_gemini(raw_text: str, today: str) -> str:
-    """Gọi Gemini (miễn phí) để tóm tắt lại toàn bộ tin thành 1 bản tin gọn gàng."""
+def summarize_with_groq(raw_text: str, today: str) -> str:
+    """Gọi Groq (miễn phí, chạy tốt từ server/cloud) để tóm tắt lại toàn bộ tin."""
     prompt = f"""Bạn là biên tập viên tin tức. Dưới đây là danh sách tin thô lấy từ RSS của nhiều báo Việt Nam uy tín, sáng ngày {today}.
 
 Hãy tổng hợp lại thành một BẢN TIN SÁNG đầy đủ, với yêu cầu:
@@ -136,25 +132,30 @@ Dữ liệu tin thô:
 """
 
     payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "temperature": 0.4,
-            "maxOutputTokens": 8192,
-        },
+        "model": GROQ_MODEL,
+        "messages": [
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.4,
+        "max_tokens": 8192,
+    }
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json",
     }
 
     last_error = None
     for attempt in range(4):
-        resp = requests.post(GEMINI_URL, json=payload, timeout=90)
+        resp = requests.post(GROQ_URL, headers=headers, json=payload, timeout=90)
         if resp.status_code == 429:
             wait = 15 * (attempt + 1)
-            print(f"[Gemini] Bị giới hạn tốc độ (429), thử lại sau {wait}s...")
+            print(f"[Groq] Bị giới hạn tốc độ (429), thử lại sau {wait}s...")
             last_error = requests.HTTPError(f"429 Too Many Requests: {resp.text}")
             time.sleep(wait)
             continue
         resp.raise_for_status()
         data = resp.json()
-        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        return data["choices"][0]["message"]["content"].strip()
 
     raise last_error
 
@@ -205,9 +206,9 @@ if __name__ == "__main__":
     else:
         raw_text = build_raw_digest_text(all_by_source)
         try:
-            digest = summarize_with_gemini(raw_text, today)
+            digest = summarize_with_groq(raw_text, today)
         except Exception as e:
-            print(f"[LỖI Gemini] {e}")
+            print(f"[LỖI Groq] {e}")
             digest = f"*🗞️ BẢN TIN SÁNG {today}*\n\n(AI tóm tắt lỗi, gửi tạm tin thô)\n\n{raw_text[:3000]}"
         send_telegram_message(digest)
 
