@@ -15,7 +15,7 @@ BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 
-GEMINI_MODEL = "gemini-2.0-flash"
+GEMINI_MODEL = "gemini-flash-latest"
 GEMINI_URL = (
     f"https://generativelanguage.googleapis.com/v1beta/models/"
     f"{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
@@ -54,13 +54,27 @@ def parse_entry_time(entry):
     return None
 
 
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/rss+xml, application/xml, text/xml, */*",
+}
+
+
 def fetch_source(name: str, url: str):
     items = []
     try:
-        feed = feedparser.parse(url)
+        resp = requests.get(url, headers=HEADERS, timeout=20)
+        resp.raise_for_status()
+        feed = feedparser.parse(resp.content)
     except Exception as e:
         print(f"[LỖI] Không tải được {name}: {e}")
         return items
+
+    if not feed.entries:
+        print(f"[CẢNH BÁO] {name} trả về 0 tin (có thể bị chặn hoặc feed rỗng). Status: {getattr(feed, 'status', 'N/A')}")
 
     cutoff = datetime.now(timezone.utc) - timedelta(hours=HOURS_LOOKBACK)
 
@@ -129,10 +143,20 @@ Dữ liệu tin thô:
         },
     }
 
-    resp = requests.post(GEMINI_URL, json=payload, timeout=90)
-    resp.raise_for_status()
-    data = resp.json()
-    return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+    last_error = None
+    for attempt in range(4):
+        resp = requests.post(GEMINI_URL, json=payload, timeout=90)
+        if resp.status_code == 429:
+            wait = 15 * (attempt + 1)
+            print(f"[Gemini] Bị giới hạn tốc độ (429), thử lại sau {wait}s...")
+            last_error = requests.HTTPError(f"429 Too Many Requests: {resp.text}")
+            time.sleep(wait)
+            continue
+        resp.raise_for_status()
+        data = resp.json()
+        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+
+    raise last_error
 
 
 def send_telegram_message(text: str):
